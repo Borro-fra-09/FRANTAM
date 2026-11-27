@@ -6,6 +6,62 @@
 
   const TEAM_COLORS = ['#ff5a36', '#4aa8ff', '#2ecc8f', '#ffb020', '#b46bff', '#ff6fb5', '#22c7d6', '#e6e65c'];
 
+  /* ---------------- Bonus / Malus ----------------
+     only: 'track' = solo corse, 'field' = solo concorsi
+     excl: interruttore che si spegne quando si accende questo */
+  const EVENT_BONUS = [
+    { k: 'pb',     label: 'PB',             pts: 150 },
+    { k: 'first',  label: '1° posto',       pts: 150, excl: 'podium' },
+    { k: 'podium', label: 'Podio (2°-3°)',  pts: 100, excl: 'first' },
+    { k: 'fs',     label: 'Falsa partenza', pts: -150, only: 'track' },
+    { k: 'nm3',    label: '3 nulli',        pts: -200, only: 'field' }
+  ];
+  const MULTI_BONUS = [
+    { k: 'first',  label: '1° posto prova multipla',      pts: 250, excl: 'podium' },
+    { k: 'podium', label: 'Podio prova multipla (2°-3°)', pts: 150, excl: 'first' },
+    { k: 'dq',     label: 'Squalificato prova multipla',  pts: -300 }
+  ];
+  const signed = n => (n > 0 ? '+' : n < 0 ? '−' : '') + fmtPts(Math.abs(n));
+  const bonusApplies = (def, type) => !def.only || (def.only === 'track' ? type === 'track' : type !== 'track');
+
+  /** Bonus salvati dentro points._bonus = { events: {codice: {pb:true,...}}, multi: {...} } */
+  function bonusOf(c) { return (c.points && c.points._bonus) || { events: {}, multi: {} }; }
+  function eventBonusSum(flags = {}) { return EVENT_BONUS.reduce((s, d) => s + (flags[d.k] ? d.pts : 0), 0); }
+  function multiBonusSum(flags = {}) { return MULTI_BONUS.reduce((s, d) => s + (flags[d.k] ? d.pts : 0), 0); }
+  function bonusTotal(b) {
+    return Object.values(b.events || {}).reduce((s, f) => s + eventBonusSum(f), 0) + multiBonusSum(b.multi);
+  }
+  function bonusTags(flags, defs) {
+    return defs.filter(d => flags?.[d.k])
+      .map(d => `<span class="tag ${d.pts > 0 ? 'bonus-p' : 'bonus-m'}">${esc(d.label)} ${signed(d.pts)}</span>`).join(' ');
+  }
+
+  // Stile interruttori (aggiunto da qui per non modificare style.css)
+  document.head.insertAdjacentHTML('beforeend', `<style>
+    .event-block { border-radius: 10px; background: var(--bg); border: 1px solid var(--line); }
+    .event-block .event-row { border: 0; background: transparent; }
+    .bonus-line { display: flex; flex-wrap: wrap; gap: 8px 14px; padding: 0 12px 12px 50px; }
+    .multi-bonus { margin-top: 10px; padding: 12px; border-radius: 10px; border: 1px solid rgba(255,176,32,.35); background: rgba(255,176,32,.06); }
+    .multi-bonus .mb-title { font-weight: 600; margin-bottom: 8px; color: var(--accent-2); }
+    .multi-bonus .bonus-line { padding: 0; }
+    .sw { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; font-size: 13px; color: var(--muted); user-select: none; }
+    .sw input { position: absolute; opacity: 0; width: 0; height: 0; }
+    .sw-track { position: relative; width: 34px; height: 19px; border-radius: 999px; background: var(--line); transition: .2s; flex: none; }
+    .sw-track::after { content: ''; position: absolute; top: 2px; left: 2px; width: 15px; height: 15px; border-radius: 50%; background: #fff; transition: .2s; }
+    .sw input:checked + .sw-track { background: var(--ok); }
+    .sw.neg input:checked + .sw-track { background: var(--danger); }
+    .sw input:checked + .sw-track::after { left: 17px; }
+    .sw input:focus-visible + .sw-track { box-shadow: 0 0 0 3px rgba(255,90,54,.3); }
+    .sw input:checked ~ .sw-label { color: var(--text); }
+    .sw-label b { font-weight: 600; }
+    .epts .eb { display: block; font-size: 13px; font-family: var(--body); font-weight: 600; }
+    .eb.p { color: var(--ok); } .eb.m { color: var(--danger); }
+    .tag.bonus-p { color: var(--ok); border-color: rgba(46,204,143,.35); background: rgba(46,204,143,.08); }
+    .tag.bonus-m { color: var(--danger); border-color: rgba(255,77,109,.35); background: rgba(255,77,109,.08); }
+    .total-split { font-size: 13px; color: var(--muted); }
+    @media (max-width: 720px) { .bonus-line { padding-left: 12px; } }
+  </style>`);
+
   const state = { teams: [], athletes: [], competitions: [] };
   const $ = (s, el = document) => el.querySelector(s);
   const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -295,25 +351,33 @@
     const g = c.gender || a?.gender || 'M';
     const evs = SCORING.eventsFor(g);
     const opt = SCORING.competitionByKey(g, c.eventKey);
+    const b = bonusOf(c), bt = bonusTotal(b);
     return `<div class="card race" data-id="${c.id}">
       <div class="race-head" data-toggle>
         <div>
-          <div class="race-title">${esc(compName(c))} ${opt?.multi ? '' : '<span class="tag">singola</span>'} ${c.handTimed ? '<span class="tag warn">manuale</span>' : ''}</div>
+          <div class="race-title">${esc(compName(c))} ${opt?.multi ? '' : '<span class="tag">singola</span>'} ${c.handTimed ? '<span class="tag warn">manuale</span>' : ''}
+            ${b.multi?.dq ? '<span class="tag bonus-m">Squalificato</span>' : ''}</div>
           <div class="small muted">📅 ${fmtDate(c.date)} · 📍 ${esc(c.location || '—')} · ${esc(catName(g, c.category))}</div>
         </div>
         <div style="display:flex;align-items:center;gap:12px">
-          <div class="race-total">${fmtPts(c.total)} <span class="small muted">pt</span></div>
+          <div style="text-align:right">
+            <div class="race-total">${fmtPts(c.total)} <span class="small muted">pt</span></div>
+            ${bt ? `<div class="small ${bt > 0 ? 'eb p' : 'eb m'}">di cui bonus/malus ${signed(bt)}</div>` : ''}
+          </div>
           <button class="btn btn-danger btn-sm admin-only" data-action="del-comp" data-id="${c.id}">🗑</button>
         </div>
       </div>
       <div class="race-detail"><div class="table-wrap"><table>
-        <thead><tr><th>Prova</th><th>Specifiche</th><th>Prestazione</th><th class="num">Punti</th></tr></thead>
+        <thead><tr><th>Prova</th><th>Specifiche</th><th>Prestazione</th><th class="num">Punti</th><th>Bonus / Malus</th></tr></thead>
         <tbody>${Object.keys(c.results).map(code => `<tr>
           <td>${esc(evs[code]?.name || code)}</td>
           <td class="muted small">${esc(SCORING.specFor(g, c.category, code) || '—')}</td>
           <td>${esc(c.results[code] || 'NM')}</td>
-          <td class="pts">${fmtPts(c.points[code])}</td></tr>`).join('')}</tbody>
-      </table></div>${c.notes ? `<p class="small muted">📝 ${esc(c.notes)}</p>` : ''}</div>
+          <td class="pts">${fmtPts(c.points[code])}</td>
+          <td>${bonusTags(b.events?.[code], EVENT_BONUS) || '<span class="muted">—</span>'}</td></tr>`).join('')}</tbody>
+      </table></div>
+      ${opt?.multi && multiBonusSum(b.multi) ? `<p class="small">🏅 Prova multipla: ${bonusTags(b.multi, MULTI_BONUS)}</p>` : ''}
+      ${c.notes ? `<p class="small muted">📝 ${esc(c.notes)}</p>` : ''}</div>
     </div>`;
   }
 
@@ -582,6 +646,10 @@
       buildRows();
     };
 
+    const switchHtml = (d, attrs) => `<label class="sw ${d.pts < 0 ? 'neg' : ''}">
+        <input type="checkbox" ${attrs} data-b="${d.k}" ${d.excl ? `data-excl="${d.excl}"` : ''}>
+        <span class="sw-track"></span><span class="sw-label">${esc(d.label)} <b>${signed(d.pts)}</b></span></label>`;
+
     const buildRows = () => {
       const a = getAth(); if (!a) return;
       const opt = SCORING.competitionByKey(a.gender, f.eventKey.value);
@@ -589,29 +657,68 @@
       $('#unofficialNote').innerHTML = opt.unofficial ? '<span class="tag warn">* Prova non ufficiale World Athletics: punteggi calcolati sulle singole tabelle</span>' : '';
       $('#eventsTable').innerHTML = opt.events.map((code, i) => {
         const spec = SCORING.specFor(a.gender, a.category, code);
-        return `<div class="event-row">
-          <span class="n">${i + 1}</span>
-          <div><span class="ename">${esc(evs[code].name)}</span>${spec ? `<span class="spec">${esc(spec)}</span>` : ''}</div>
-          <input data-code="${code}" placeholder="${esc(SCORING.placeholderFor(a.gender, code))}" inputmode="decimal" autocomplete="off">
-          <span class="epts" data-pts="${code}">0</span>
+        return `<div class="event-block">
+          <div class="event-row">
+            <span class="n">${i + 1}</span>
+            <div><span class="ename">${esc(evs[code].name)}</span>${spec ? `<span class="spec">${esc(spec)}</span>` : ''}</div>
+            <input data-mark data-code="${code}" placeholder="${esc(SCORING.placeholderFor(a.gender, code))}" inputmode="decimal" autocomplete="off">
+            <span class="epts" data-pts="${code}">0</span>
+          </div>
+          <div class="bonus-line">${EVENT_BONUS.filter(d => bonusApplies(d, evs[code].type))
+            .map(d => switchHtml(d, `data-ev="${code}"`)).join('')}</div>
         </div>`;
-      }).join('');
-      $$('#eventsTable input').forEach(inp => inp.oninput = recalc);
+      }).join('') + (opt.multi ? `<div class="multi-bonus">
+          <div class="mb-title">🏅 Bonus / malus della prova multipla</div>
+          <div class="bonus-line">${MULTI_BONUS.map(d => switchHtml(d, 'data-multi')).join('')}</div>
+        </div>` : '');
+      $$('#eventsTable input[data-mark]').forEach(inp => inp.oninput = recalc);
+      $$('#eventsTable input[type=checkbox]').forEach(cb => cb.onchange = () => {
+        // 1° posto e podio si escludono a vicenda
+        if (cb.checked && cb.dataset.excl) {
+          const scope = cb.closest('.bonus-line');
+          const other = scope.querySelector(`input[data-b="${cb.dataset.excl}"]`);
+          if (other) other.checked = false;
+        }
+        recalc();
+      });
       recalc();
+    };
+
+    /** Legge marche, punti e interruttori dal form */
+    const collect = () => {
+      const a = getAth();
+      const results = {}, points = {}, bonus = { events: {}, multi: {} };
+      let base = 0, valid = 0, invalid = false;
+      $$('#eventsTable input[data-mark]').forEach(inp => {
+        const code = inp.dataset.code, v = inp.value.trim();
+        if (v && !SCORING.isValidMark(a.gender, code, v)) invalid = true;
+        if (v) valid++;
+        results[code] = v;
+        points[code] = SCORING.points(a.gender, code, v, f.handTimed.checked);
+        base += points[code];
+      });
+      $$('#eventsTable input[type=checkbox]:checked').forEach(cb => {
+        if (cb.dataset.ev) (bonus.events[cb.dataset.ev] ||= {})[cb.dataset.b] = true;
+        else bonus.multi[cb.dataset.b] = true;
+      });
+      const bt = bonusTotal(bonus);
+      return { results, points, bonus, base, bt, total: base + bt, valid, invalid, anySwitch: bt !== 0 };
     };
 
     const recalc = () => {
       const a = getAth(); if (!a) return;
-      let total = 0;
-      $$('#eventsTable input').forEach(inp => {
-        const code = inp.dataset.code;
-        const p = SCORING.points(a.gender, code, inp.value, f.handTimed.checked);
+      const r = collect();
+      $$('#eventsTable input[data-mark]').forEach(inp => {
+        const code = inp.dataset.code, p = r.points[code];
+        const eb = eventBonusSum(r.bonus.events[code]);
         const el = $(`[data-pts="${code}"]`);
-        el.textContent = fmtPts(p); el.classList.toggle('has', p > 0);
+        el.innerHTML = fmtPts(p) + (eb ? `<span class="eb ${eb > 0 ? 'p' : 'm'}">${signed(eb)}</span>` : '');
+        el.classList.toggle('has', p > 0);
         inp.style.borderColor = inp.value && !SCORING.isValidMark(a.gender, code, inp.value) ? 'var(--danger)' : '';
-        total += p;
       });
-      $('#totalBox').innerHTML = `<div class="total-bar"><span>Totale punti</span><span class="tv">${fmtPts(total)}</span></div>`;
+      $('#totalBox').innerHTML = `<div class="total-bar">
+        <span>Totale punti<br><span class="total-split">tabelle ${fmtPts(r.base)} · bonus/malus ${signed(r.bt) || '0'}</span></span>
+        <span class="tv">${fmtPts(r.total)}</span></div>`;
     };
 
     f.athleteId.onchange = fillEvents;
@@ -623,24 +730,16 @@
     f.onsubmit = async e => {
       e.preventDefault();
       const a = getAth(); if (!a) return toast('Seleziona un atleta', 'err');
-      const results = {}, points = {};
-      let total = 0, valid = 0, invalid = false;
-      $$('#eventsTable input').forEach(inp => {
-        const code = inp.dataset.code, v = inp.value.trim();
-        if (v && !SCORING.isValidMark(a.gender, code, v)) invalid = true;
-        if (v) valid++;
-        results[code] = v;
-        points[code] = SCORING.points(a.gender, code, v, f.handTimed.checked);
-        total += points[code];
-      });
-      if (invalid) return toast('Controlla il formato delle prestazioni evidenziate', 'err');
-      if (!valid) return toast('Inserisci almeno una prestazione', 'err');
+      const r = collect();
+      if (r.invalid) return toast('Controlla il formato delle prestazioni evidenziate', 'err');
+      if (!r.valid && !r.anySwitch) return toast('Inserisci almeno una prestazione o un bonus/malus', 'err');
+      const points = { ...r.points, _bonus: r.bonus };
       await DB.add('competitions', {
         athleteId: a.id, gender: a.gender, category: a.category, eventKey: f.eventKey.value,
         date: f.date.value, location: f.location.value.trim(), notes: f.notes.value.trim(),
-        handTimed: f.handTimed.checked, results, points, total
+        handTimed: f.handTimed.checked, results: r.results, points, total: r.total
       });
-      await loadAll(); closeModal(); render(); toast(`Gara salvata: ${fmtPts(total)} punti ✔`);
+      await loadAll(); closeModal(); render(); toast(`Gara salvata: ${fmtPts(r.total)} punti ✔`);
     };
   }
 
